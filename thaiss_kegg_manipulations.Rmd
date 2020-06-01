@@ -1,0 +1,119 @@
+---
+title: "kegg_manipulations"
+author: "PennCHOP Microbiome Program"
+date: \today
+output: pdf_document
+---
+
+```{r}
+## define constants
+data_dir <- "/Users/tanesc/Documents/thaiss/thaiss_data"
+
+metadata_fp <- file.path(data_dir, "lenka.txt") ## This is a tab seperated file that contins the metadata for each sample. Each sample is represented by a row and the columns are the additional information you can reference in your code while you are doing the analysis. It is assumed in the code that the Sample names as annotated with the column SampleID. This also coincides with the file name of the output files based on Sunbeam rules.
+```
+
+```{r}
+read_kegg_results <- function(base_dir, s_seq) {
+  data_frame(FileName = list.files(
+    base_dir, pattern="*_1.txt")) %>%
+    group_by(FileName) %>%
+    do(read.delim(file.path(base_dir, .$FileName), stringsAsFactors = F)) %>%
+    ungroup() %>%
+    mutate(SampleID = sub("_1.txt", "", FileName, perl=T)) %>%
+    select(-FileName) %>%
+    
+    group_by(SampleID, geneID) %>%
+    summarize(count = sum(count)) %>%
+    ungroup() %>%
+    
+    right_join(select(s_seq, SampleID), by="SampleID") %>%
+    
+    complete(SampleID, geneID, fill = list(count=0)) %>%
+    filter(!is.na(geneID)) %>%
+    
+    mutate(database = basename(base_dir))
+  
+}
+
+```
+
+## Read in the data
+
+```{r}
+s <- read.delim(metadata_fp)
+
+```
+
+This contains all the ortholog counts for all the samples.
+
+```{r}
+## read in the txt files that contain the counts to KEGG orthologs
+
+kegg_dir <- file.path(data_dir, "lenka")
+kegg <- read_kegg_results(kegg_dir, s) 
+
+
+## Optional: If you would like to annotate your dataframe with the descriptions of all the KEGG orthologs
+## You can download the file from here and save as a txt file: http://rest.kegg.jp/list/ko
+## For example you can run "wget http://rest.kegg.jp/list/ko -O list_ko.txt" on bash and it will download
+
+kegg_desc <- read.delim(file.path(data_dir, "list_ko.txt"), header=F) %>%
+  setNames(c("geneID", "KO_description")) %>%
+  mutate(geneID = sub("ko:", "", geneID))
+kegg <- kegg %>%
+  left_join(kegg_desc, by="geneID")
+
+```
+
+
+## Summarize them into pathways
+
+```{r}
+## Now we want to group the orthologs into pathways
+## We first download the KO to pathway links from the KEGG API
+## You can do that by running "wget http://rest.kegg.jp/link/module/ko -O link_ko_module.txt" on your terminal
+
+## There is a slight consideration before we merge everything with our main database. There is probably not a 1-to-1 mapping between the orthologs and modules.
+## Meaning one ortholod can map to multiple modules. And of course there are multiple orthologs in a module
+## One way to overcome this is to weight the counts. So if an ortholog is in 5 modules, you divide the number of times you see that ortholog in your sample by 5.
+## This is the same as multiplying counts with 1/n where n is the number of modules an ortholog is in.
+## We first look into the link_ko_module and calculate these weights
+kegg_ko_to_module <- read.delim(file.path(data_dir, "link_ko_module.txt"), header=F)  %>%
+  setNames(c("geneID", "module")) %>%
+  mutate(geneID = sub("ko:", "", geneID)) %>%
+  group_by(geneID) %>%
+  mutate(weight = 1/n()) %>%
+  ungroup()
+
+
+## If you would not like to weight your counts, you can just run 
+#kegg_ko_to_module <- read.delim(file.path(data_dir, "link_ko_module.txt"), header=F)  %>%
+#  setNames(c("geneID", "module")) %>%
+#  mutate(geneID = sub("ko:", "", geneID))
+# but you have to keep in consideration that you will be counting each read multiple times, so you need to be careful when you are calculating relative abundances.
+
+
+## Now we merge the kegg results with the module mapping file.
+
+kegg_module <- kegg %>%
+  left_join(kegg_ko_to_module, by="geneID") %>%
+  filter(!is.na(module)) %>% #not all are assigned to a module. This removes them
+  mutate(count = count * weight)  # we are weighing each count by how manu modules an ortholog is in
+  
+
+## Optional: If you would like to annotate your dataframe with the descriptions of all the KEGG orthologs
+## You can download the file from here and save as a txt file: http://rest.kegg.jp/list/module
+## For example you can run "wget http://rest.kegg.jp/list/module -O list_module.txt" on bash and it will download
+
+module_desc <- read.delim(file.path(data_dir, "list_module.txt"), header=F) %>%
+  setNames(c("module", "module_description"))
+kegg_module <- kegg_module %>%
+  left_join(module_desc, by="module")
+
+```
+
+
+
+
+
+
