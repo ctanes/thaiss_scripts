@@ -5,6 +5,26 @@ date: \today
 output: pdf_document
 ---
 
+
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(
+  tidy=FALSE,
+  cache=FALSE,
+  echo=FALSE,
+  warning=FALSE,
+  message=FALSE,
+  dpi=100,
+  fig.width=15,
+  fig.height=10,
+  fig.align = "center"
+  )
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+```
+
 ```{r}
 ## define constants
 data_dir <- "/Users/tanesc/Documents/thaiss/thaiss_data"
