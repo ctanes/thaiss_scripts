@@ -30,6 +30,9 @@ library(tidyr)
 data_dir <- "/Users/tanesc/Documents/thaiss/thaiss_data"
 
 metadata_fp <- file.path(data_dir, "lenka.txt") ## This is a tab seperated file that contins the metadata for each sample. Each sample is represented by a row and the columns are the additional information you can reference in your code while you are doing the analysis. It is assumed in the code that the Sample names as annotated with the column SampleID. This also coincides with the file name of the output files based on Sunbeam rules.
+
+
+preprocess_fp <- file.path(data_dir, "preprocess_summary.tsv")
 ```
 
 ```{r}
@@ -60,6 +63,10 @@ read_kegg_results <- function(base_dir, s_seq) {
 ## Read in the data
 
 ```{r}
+preprocess <- read.delim(preprocess_fp) %>%
+  mutate(Samples = sub(".json", "", Samples)) %>%
+  rename(SampleID = Samples)
+
 s <- read.delim(metadata_fp)
 
 ```
@@ -70,7 +77,9 @@ This contains all the ortholog counts for all the samples.
 ## read in the txt files that contain the counts to KEGG orthologs
 
 kegg_dir <- file.path(data_dir, "lenka")
-kegg <- read_kegg_results(kegg_dir, s) 
+kegg <- read_kegg_results(kegg_dir, s) %>%
+  left_join(select(preprocess, SampleID, nonhost), by="SampleID") %>%
+  mutate(props = count / nonhost)
 
 
 ## Optional: If you would like to annotate your dataframe with the descriptions of all the KEGG orthologs
@@ -118,7 +127,7 @@ kegg_ko_to_module <- read.delim(file.path(data_dir, "link_ko_module.txt"), heade
 kegg_module <- kegg %>%
   left_join(kegg_ko_to_module, by="geneID") %>%
   filter(!is.na(module)) %>% #not all are assigned to a module. This removes them
-  mutate(count = count * weight)  # we are weighing each count by how manu modules an ortholog is in
+  mutate(props = props * weight)  # we are weighing each count by how manu modules an ortholog is in
   
 
 ## Optional: If you would like to annotate your dataframe with the descriptions of all the KEGG orthologs
@@ -129,6 +138,12 @@ module_desc <- read.delim(file.path(data_dir, "list_module.txt"), header=F) %>%
   setNames(c("module", "module_description"))
 kegg_module <- kegg_module %>%
   left_join(module_desc, by="module")
+
+
+## To calculate the total abundance of a module etc you group by the module for each SampleID and then you sum up the proportions
+kegg_module_summed <- kegg_module %>%
+  group_by(SampleID, module) %>%
+  summarize(module_props = sum(props))
 
 ```
 
