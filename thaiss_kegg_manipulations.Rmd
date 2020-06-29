@@ -23,16 +23,20 @@ knitr::opts_chunk$set(
 ```{r}
 library(dplyr)
 library(tidyr)
+library(broom)
+library(ggplot2)
+library(ggbeeswarm)
 ```
 
 ```{r}
 ## define constants
-data_dir <- "/Users/tanesc/Documents/thaiss/thaiss_data"
+data_dir <- "/Users/tanesc/Documents/thaiss/lila_data"
 
-metadata_fp <- file.path(data_dir, "lenka.txt") ## This is a tab seperated file that contins the metadata for each sample. Each sample is represented by a row and the columns are the additional information you can reference in your code while you are doing the analysis. It is assumed in the code that the Sample names as annotated with the column SampleID. This also coincides with the file name of the output files based on Sunbeam rules.
+metadata_fp <- file.path(data_dir, "export_files", "s.txt") ## This is a tab seperated file that contins the metadata for each sample. Each sample is represented by a row and the columns are the additional information you can reference in your code while you are doing the analysis. It is assumed in the code that the Sample names as annotated with the column SampleID. This also coincides with the file name of the output files based on Sunbeam rules.
 
+kegg_info_dir <- file.path(data_dir, "../kegg_links")
 
-preprocess_fp <- file.path(data_dir, "preprocess_summary.tsv")
+preprocess_fp <- file.path(data_dir, "export_files", "preprocess_summary.tsv")
 ```
 
 ```{r}
@@ -65,9 +69,13 @@ read_kegg_results <- function(base_dir, s_seq) {
 ```{r}
 preprocess <- read.delim(preprocess_fp) %>%
   mutate(Samples = sub(".json", "", Samples)) %>%
-  rename(SampleID = Samples)
+  rename(SampleID = Samples) %>%
+  select(SampleID, nonhost)
 
-s <- read.delim(metadata_fp)
+s <- read.delim(metadata_fp, sep=" ") %>%
+  mutate(experiment = ifelse(grepl("^Ctrl|Gly", SampleID), "exp1", "exp2")) %>%
+  mutate(study_group = ifelse(grepl("ctrl", SampleID, ignore.case = T), "Control", "exp")) %>%
+  left_join(preprocess, by="SampleID")
 
 ```
 
@@ -76,7 +84,7 @@ This contains all the ortholog counts for all the samples.
 ```{r}
 ## read in the txt files that contain the counts to KEGG orthologs
 
-kegg_dir <- file.path(data_dir, "lenka")
+kegg_dir <- file.path(data_dir)
 kegg <- read_kegg_results(kegg_dir, s) %>%
   left_join(select(preprocess, SampleID, nonhost), by="SampleID") %>%
   mutate(props = count / nonhost)
@@ -86,7 +94,7 @@ kegg <- read_kegg_results(kegg_dir, s) %>%
 ## You can download the file from here and save as a txt file: http://rest.kegg.jp/list/ko
 ## For example you can run "wget http://rest.kegg.jp/list/ko -O list_ko.txt" on bash and it will download
 
-kegg_desc <- read.delim(file.path(data_dir, "list_ko.txt"), header=F) %>%
+kegg_desc <- read.delim(file.path(kegg_info_dir, "list_ko.txt"), header=F) %>%
   setNames(c("geneID", "KO_description")) %>%
   mutate(geneID = sub("ko:", "", geneID))
 kegg <- kegg %>%
@@ -107,9 +115,10 @@ kegg <- kegg %>%
 ## One way to overcome this is to weight the counts. So if an ortholog is in 5 modules, you divide the number of times you see that ortholog in your sample by 5.
 ## This is the same as multiplying counts with 1/n where n is the number of modules an ortholog is in.
 ## We first look into the link_ko_module and calculate these weights
-kegg_ko_to_module <- read.delim(file.path(data_dir, "link_ko_module.txt"), header=F)  %>%
-  setNames(c("geneID", "module")) %>%
+kegg_ko_to_path <- read.delim(file.path(kegg_info_dir, "link_ko_path.txt"), header=F)  %>%
+  setNames(c("geneID", "path")) %>%
   mutate(geneID = sub("ko:", "", geneID)) %>%
+  filter(grepl("map", path)) %>%
   group_by(geneID) %>%
   mutate(weight = 1/n()) %>%
   ungroup()
@@ -124,31 +133,132 @@ kegg_ko_to_module <- read.delim(file.path(data_dir, "link_ko_module.txt"), heade
 
 ## Now we merge the kegg results with the module mapping file.
 
-kegg_module <- kegg %>%
-  left_join(kegg_ko_to_module, by="geneID") %>%
-  filter(!is.na(module)) %>% #not all are assigned to a module. This removes them
-  mutate(props = props * weight)  # we are weighing each count by how manu modules an ortholog is in
+kegg_path <- kegg %>%
+  left_join(kegg_ko_to_path, by="geneID") %>%
+  filter(!is.na(path)) #%>% #not all are assigned to a module. This removes them
+  #mutate(props = props * weight)  # we are weighing each count by how manu modules an ortholog is in
   
 
 ## Optional: If you would like to annotate your dataframe with the descriptions of all the KEGG orthologs
 ## You can download the file from here and save as a txt file: http://rest.kegg.jp/list/module
 ## For example you can run "wget http://rest.kegg.jp/list/module -O list_module.txt" on bash and it will download
 
-module_desc <- read.delim(file.path(data_dir, "list_module.txt"), header=F) %>%
-  setNames(c("module", "module_description"))
-kegg_module <- kegg_module %>%
-  left_join(module_desc, by="module")
+path_desc <- read.delim(file.path(kegg_info_dir, "list_path.txt"), header=F) %>%
+  setNames(c("path", "pathway_description"))
+kegg_path <- kegg_path %>%
+  left_join(path_desc, by="path")
+write.table(kegg_path, file=file.path(data_dir, "export_files", "kegg_path.txt"), sep='\t', quote=F, row.names=F)
 
 
 ## To calculate the total abundance of a module etc you group by the module for each SampleID and then you sum up the proportions
-kegg_module_summed <- kegg_module %>%
-  group_by(SampleID, module) %>%
-  summarize(module_props = sum(props))
+kegg_path_summed <- kegg_path %>%
+  group_by(SampleID, path, pathway_description) %>%
+  summarize(path_props = sum(props))
+write.table(kegg_path_summed, file=file.path(data_dir, "export_files", "kegg_summed_path.txt"), sep='\t', quote=F, row.names=F)
 
 ```
 
 
 
+Comparing control to experimental group for each experiment
+
+```{r}
+summaries_df <- kegg_path_summed %>%
+  left_join(s, by="SampleID") %>%
+  
+  rename(props = path_props) %>%
+  mutate(props_original = props) %>%
+  mutate(props = props + 1e-8) %>%
+  mutate(props_logit = log(props/(1-props))) %>%
+  
+  group_by(experiment, path, pathway_description) %>%
+  do(tidy(lm(props_logit ~ study_group, data=.))) %>%
+  ungroup() %>%
+  
+  filter(!grepl("Intercept", term)) %>%
+  mutate(term = sub("study_group", "Ctrl - ", term)) %>%
+  
+  group_by(experiment) %>%
+  mutate(fdr = p.adjust(p.value, method="BH")) %>%
+  ungroup()
+
+write.table(summaries_df, file=file.path(data_dir, "export_files", "lm_results_per_experiment.txt"), sep='\t', quote=F, row.names=F)
+
+```
 
 
 
+```{r}
+pathway_of_interest <- summaries_df %>%
+  filter(fdr < 0.1) %>%
+  filter(experiment == "exp1") %>%
+  pull(path) %>%
+  as.character() %>%
+  unique()
+
+kegg_path_summed %>%
+  left_join(s, by="SampleID") %>%
+  filter(experiment == "exp1") %>%
+  filter(path %in% pathway_of_interest) %>%
+  ggplot(aes(x=study_group, y=path_props)) +
+    geom_boxplot(outlier.alpha=0) +
+    geom_quasirandom() +
+    theme_bw() +
+    facet_wrap(~pathway_description) +
+    labs()
+
+```
+
+
+```{r fig.height=10, fig.width=7}
+pathway_of_interest <- summaries_df %>%
+  filter(fdr < 0.01) %>%
+  filter(experiment == "exp2") %>%
+  pull(path) %>%
+  as.character() %>%
+  unique()
+
+kegg_path_summed %>%
+  left_join(s, by="SampleID") %>%
+  filter(experiment == "exp2") %>%
+  filter(path %in% pathway_of_interest) %>%
+  mutate(path_props = path_props + 1e-8) %>%
+  mutate(pathway_description = gsub(" ", "\n", pathway_description)) %>%
+  ggplot(aes(x=study_group, y=path_props)) +
+    geom_boxplot(outlier.alpha=0) +
+    geom_quasirandom() +
+    theme_bw() +
+    theme(strip.background = element_blank()) +
+    facet_wrap(~pathway_description, scales="free_y") +
+    scale_y_log10(labels=scales:::percent) +
+    labs()
+
+ggsave("exp2_diff_ab_pathway.pdf", height=20, width=15, useDingbats=F)
+```
+
+
+Comparing experimental groups for each experiment
+
+```{r}
+summaries_df <- kegg_path_summed %>%
+  left_join(s, by="SampleID") %>%
+  
+  rename(props = path_props) %>%
+  mutate(props_original = props) %>%
+  mutate(props = props + 1e-8) %>%
+  mutate(props_logit = log(props/(1-props))) %>%
+  
+  group_by(study_group, path, pathway_description) %>%
+  do(tidy(lm(props_logit ~ experiment, data=.))) %>%
+  ungroup() %>%
+  
+  filter(!grepl("Intercept", term)) %>%
+  mutate(term = sub("experiment", "exp1 - ", term)) %>%
+  
+  group_by(study_group) %>%
+  mutate(fdr = p.adjust(p.value, method="BH")) %>%
+  ungroup()
+
+write.table(summaries_df, file=file.path(data_dir, "export_files", "lm_results_per_group.txt"), sep='\t', quote=F, row.names=F)
+
+```
